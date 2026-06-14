@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>ООО Зенит — сайт временно недоступен</title>
+    <link rel="icon" type="image/png" href="/__guardian/favicon.png">
+    <style>
+        :root {
+            --accent: #5b9df6;
+            --glow: rgba(91, 157, 246, 0.45);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+            background: radial-gradient(circle at 50% 38%, #0f121a 0%, #05060b 100%);
+            color: #e8eef9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 24px;
+            -webkit-font-smoothing: antialiased;
+        }
+        .card {
+            width: 100%;
+            max-width: 460px;
+            text-align: center;
+            background: linear-gradient(160deg, rgba(20,26,42,0.92), rgba(11,15,26,0.96));
+            border: 1px solid rgba(91,157,246,0.16);
+            border-radius: 26px;
+            padding: 44px 34px 34px;
+            box-shadow: 0 30px 70px rgba(0,0,0,0.45);
+            animation: rise 0.5s ease both;
+        }
+        @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+        .logo-wrap {
+            width: 96px; height: 96px;
+            margin: 0 auto 22px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .logo-wrap img {
+            width: 100%; height: 100%;
+            object-fit: contain;
+            filter: drop-shadow(0 4px 18px var(--glow));
+            animation: float 3.2s ease-in-out infinite;
+        }
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+        h1 {
+            font-size: 1.55rem;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            margin-bottom: 14px;
+            background: linear-gradient(120deg, #ffffff, #bcd9ff 60%, var(--accent));
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        p { color: #9fb0cc; line-height: 1.6; font-size: 1rem; }
+        .dots { display: inline-flex; gap: 6px; margin: 26px 0 8px; }
+        .dots span {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: var(--accent); opacity: 0.35;
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+        .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes pulse { 0%,100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+        .status { font-size: 0.86rem; color: #6f7f9d; margin-top: 4px; }
+        .vk-link {
+            display: inline-flex; align-items: center; gap: 8px;
+            margin-top: 28px; padding-top: 22px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            width: 100%; justify-content: center;
+            color: var(--accent); text-decoration: none; font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .vk-link:hover { opacity: 0.8; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo-wrap">
+            <img src="/__guardian/logo.png" alt="ООО Зенит">
+        </div>
+        <h1>Сайт временно недоступен</h1>
+        <p>Проводим обновление или короткие техработы.<br>Мы уже всё чиним — страница обновится сама.</p>
+        <div class="dots"><span></span><span></span><span></span></div>
+        <div class="status" id="status">Проверяем доступность…</div>
+        <a class="vk-link" href="https://vk.com/zenit_s1" target="_blank" rel="noopener">
+            Наша группа ВКонтакте →
+        </a>
+    </div>
+    <script>
+        // Авто-перезагрузка: раз в 7с спрашиваем у guardian, ожил ли сайт.
+        function check() {
+            fetch('/__guardian/health', { cache: 'no-store' })
+                .then(function (r) { return r.ok ? r.json() : { up: false }; })
+                .then(function (j) {
+                    if (j && j.up) {
+                        document.getElementById('status').textContent = 'Сайт снова в сети, открываем…';
+                        location.reload();
+                    }
+                })
+                .catch(function () { /* всё ещё недоступно — ждём дальше */ });
+        }
+        setInterval(check, 7000);
+        setTimeout(check, 1500);
+    </script>
+</body>
+</html>
