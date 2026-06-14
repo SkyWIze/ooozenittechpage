@@ -73,6 +73,13 @@ def _open_upstream(timeout):
     return http.client.HTTPConnection(host, port, timeout=timeout)
 
 
+def _looks_down(status, body):
+    """Когда слот бота лежит, центральный прокси Bothost отдаёт своё
+    «404 page not found» (короткий текст). Это значит бот недоступен —
+    отличаем от настоящих 404 самого приложения (там JSON/HTML)."""
+    return status == 404 and b"page not found" in (body or b"")[:120].lower()
+
+
 def upstream_up():
     """Быстрая проверка доступности бота (для авто-перезагрузки страницы)."""
     ok, _ = _probe_upstream(HEALTH_TIMEOUT)
@@ -87,8 +94,10 @@ def _probe_upstream(timeout):
         conn = _open_upstream(timeout)
         conn.request("GET", "/", headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
         resp = conn.getresponse()
-        resp.read()
+        body = resp.read()
         conn.close()
+        if _looks_down(resp.status, body):
+            return False, "Bothost 404 (слот бота лежит)"
         return (resp.status < 500), f"HTTP {resp.status}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -156,6 +165,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if resp.status in (502, 503, 504):
             log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
+            return self._serve_maintenance()
+
+        if _looks_down(resp.status, data):
+            log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
             return self._serve_maintenance()
 
         self.send_response(resp.status)
