@@ -32,6 +32,10 @@ PORT = int(os.getenv("PORT", "3000"))
 UPSTREAM_URL = os.getenv("UPSTREAM_URL", "").strip().rstrip("/")
 UPSTREAM_TIMEOUT = float(os.getenv("GUARDIAN_TIMEOUT", "30"))
 HEALTH_TIMEOUT = 4.0
+# Проверять SSL-сертификат бота? Выключи (0/false), если UPSTREAM_URL — это https
+# по «голому» IP: сертификат выписан на домен и не совпадёт с IP. Guardian ходит
+# к своему же бэкенду, так что отключение проверки тут безопасно.
+VERIFY_SSL = os.getenv("GUARDIAN_VERIFY_SSL", "1").strip().lower() not in ("0", "false", "no")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAINT_FILE = os.path.join(BASE_DIR, "guardian_maintenance.html")
@@ -46,6 +50,9 @@ HOP_BY_HOP = {
 
 _up = urlsplit(UPSTREAM_URL) if UPSTREAM_URL else None
 _ssl_ctx = ssl.create_default_context()
+if not VERIFY_SSL:
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def log(msg):
