@@ -49,10 +49,12 @@ HOP_BY_HOP = {
 }
 
 _up = urlsplit(UPSTREAM_URL) if UPSTREAM_URL else None
+# Bothost выдаёт самоподписанные сертификаты на *.bothost.tech, а апстрим — это наш
+# же бот. Поэтому проверку сертификата апстрима отключаем безусловно (не зависим от
+# переменной окружения, чтобы не было сюрпризов).
 _ssl_ctx = ssl.create_default_context()
-if not VERIFY_SSL:
-    _ssl_ctx.check_hostname = False
-    _ssl_ctx.verify_mode = ssl.CERT_NONE
+_ssl_ctx.check_hostname = False
+_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def log(msg):
