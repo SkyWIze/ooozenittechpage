@@ -73,17 +73,23 @@ def _open_upstream(timeout):
 
 def upstream_up():
     """Быстрая проверка доступности бота (для авто-перезагрузки страницы)."""
+    ok, _ = _probe_upstream(HEALTH_TIMEOUT)
+    return ok
+
+
+def _probe_upstream(timeout):
+    """Возвращает (доступен, детали) — для логов диагностики."""
     if not _up:
-        return False
+        return False, "UPSTREAM_URL не задан"
     try:
-        conn = _open_upstream(HEALTH_TIMEOUT)
+        conn = _open_upstream(timeout)
         conn.request("GET", "/", headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
         resp = conn.getresponse()
         resp.read()
         conn.close()
-        return resp.status < 500
-    except Exception:
-        return False
+        return (resp.status < 500), f"HTTP {resp.status}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def _read_file(path):
@@ -142,10 +148,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             resp = conn.getresponse()
             data = resp.read()
             conn.close()
-        except Exception:
+        except Exception as e:
+            log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {type(e).__name__}: {e}")
             return self._serve_maintenance()
 
         if resp.status in (502, 503, 504):
+            log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
             return self._serve_maintenance()
 
         self.send_response(resp.status)
@@ -215,6 +223,8 @@ def main():
     else:
         log(f"апстрим (бот): {UPSTREAM_URL}")
     log(f"слушаю публичный порт {PORT}")
+    ok, detail = _probe_upstream(8.0)
+    log(f"проверка апстрима при старте: {'ДОСТУПЕН' if ok else 'НЕ ДОСТУПЕН'} ({detail})")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     try:
         httpd.serve_forever()
