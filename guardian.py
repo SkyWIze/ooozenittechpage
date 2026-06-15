@@ -44,10 +44,12 @@ UPDATING_FILE = os.path.join(BASE_DIR, "guardian_updating.html")
 LOGO_FILE = os.path.join(BASE_DIR, "logo", "zenit-logo.png")
 FAVICON_FILE = os.path.join(BASE_DIR, "logo", "zenit-favicon.png")
 
-# Режим «идёт обновление»: бот при старте пингует /__guardian/deploying с токеном,
-# и guardian на короткое окно показывает страницу обновления (отдельную от «недоступен»).
+# Режим «идёт обновление»: бот при старте пингует /__guardian/deploying → включается
+# страница обновления; когда бот реально поднялся, он пингует /__guardian/ready →
+# страница уходит РОВНО тогда. Окно (DEPLOY_WINDOW) — лишь страховка-максимум, чтобы
+# страница не залипла навсегда, если «ready» так и не пришёл (деплой провалился).
 GUARDIAN_TOKEN = os.getenv("GUARDIAN_TOKEN", "").strip()
-DEPLOY_WINDOW_SEC = float(os.getenv("GUARDIAN_DEPLOY_WINDOW", "60"))
+DEPLOY_WINDOW_SEC = float(os.getenv("GUARDIAN_DEPLOY_WINDOW", "120"))
 _deploying_until = 0.0
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
@@ -150,6 +152,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(200 if up else 503, {"up": up})
         if path == "/__guardian/deploying":
             return self._deploying_control()
+        if path == "/__guardian/ready":
+            return self._ready_control()
         if path == "/__guardian/logo.png":
             return self._send_static(LOGO_FILE, "image/png")
         if path == "/__guardian/favicon.png":
@@ -170,8 +174,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except ValueError:
                 pass
         _deploying_until = time.time() + max(0.0, secs)
-        log(f"режим обновления включён на {int(secs)}с")
+        log(f"режим обновления включён (страховка {int(secs)}с)")
         return self._send_json(200, {"ok": True, "deploying_for_sec": int(secs)})
+
+    def _ready_control(self):
+        global _deploying_until
+        if not GUARDIAN_TOKEN:
+            return self._send_json(403, {"error": "GUARDIAN_TOKEN не задан"})
+        qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        if (qs.get("token") or [""])[0] != GUARDIAN_TOKEN:
+            return self._send_json(403, {"error": "неверный токен"})
+        was = _deploying_active()
+        _deploying_until = 0.0
+        if was:
+            log("бот сообщил о готовности — режим обновления снят")
+        return self._send_json(200, {"ok": True, "deploying": False})
 
     def _proxy(self):
         # читаем тело запроса (если есть)
