@@ -24,8 +24,9 @@ import json
 import os
 import socketserver
 import ssl
+import time
 import http.server
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 # --- Конфигурация -------------------------------------------------------------
 PORT = int(os.getenv("PORT", "3000"))
@@ -39,8 +40,15 @@ VERIFY_SSL = os.getenv("GUARDIAN_VERIFY_SSL", "1").strip().lower() not in ("0", 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAINT_FILE = os.path.join(BASE_DIR, "guardian_maintenance.html")
+UPDATING_FILE = os.path.join(BASE_DIR, "guardian_updating.html")
 LOGO_FILE = os.path.join(BASE_DIR, "logo", "zenit-logo.png")
 FAVICON_FILE = os.path.join(BASE_DIR, "logo", "zenit-favicon.png")
+
+# Режим «идёт обновление»: бот при старте пингует /__guardian/deploying с токеном,
+# и guardian на короткое окно показывает страницу обновления (отдельную от «недоступен»).
+GUARDIAN_TOKEN = os.getenv("GUARDIAN_TOKEN", "").strip()
+DEPLOY_WINDOW_SEC = float(os.getenv("GUARDIAN_DEPLOY_WINDOW", "60"))
+_deploying_until = 0.0
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
 HOP_BY_HOP = {
@@ -59,6 +67,10 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 def log(msg):
     print(f"[guardian] {msg}", flush=True)
+
+
+def _deploying_active():
+    return time.time() < _deploying_until
 
 
 def _open_upstream(timeout):
@@ -127,17 +139,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.startswith("/__guardian/"):
             return self._guardian_route(path)
+        if _deploying_active():
+            return self._serve_updating()
         self._proxy()
 
     def _guardian_route(self, path):
         if path == "/__guardian/health":
-            up = upstream_up()
+            # В окне обновления тоже считаем «не готов», чтобы страница не уехала раньше.
+            up = (not _deploying_active()) and upstream_up()
             return self._send_json(200 if up else 503, {"up": up})
+        if path == "/__guardian/deploying":
+            return self._deploying_control()
         if path == "/__guardian/logo.png":
             return self._send_static(LOGO_FILE, "image/png")
         if path == "/__guardian/favicon.png":
             return self._send_static(FAVICON_FILE, "image/png")
         return self._send_json(404, {"error": "not found"})
+
+    def _deploying_control(self):
+        global _deploying_until
+        if not GUARDIAN_TOKEN:
+            return self._send_json(403, {"error": "GUARDIAN_TOKEN не задан"})
+        qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        if (qs.get("token") or [""])[0] != GUARDIAN_TOKEN:
+            return self._send_json(403, {"error": "неверный токен"})
+        secs = DEPLOY_WINDOW_SEC
+        if qs.get("seconds"):
+            try:
+                secs = float(qs["seconds"][0])
+            except ValueError:
+                pass
+        _deploying_until = time.time() + max(0.0, secs)
+        log(f"режим обновления включён на {int(secs)}с")
+        return self._send_json(200, {"ok": True, "deploying_for_sec": int(secs)})
 
     def _proxy(self):
         # читаем тело запроса (если есть)
@@ -177,6 +211,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 continue
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+        self.close_connection = True
+
+    def _serve_updating(self):
+        try:
+            data = _read_file(UPDATING_FILE)
+        except Exception:
+            data = b"<h1>Update in progress</h1>"
+        self.send_response(503)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Retry-After", "5")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
         if self.command != "HEAD":
