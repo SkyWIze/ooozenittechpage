@@ -52,6 +52,35 @@ GUARDIAN_TOKEN = os.getenv("GUARDIAN_TOKEN", "").strip()
 DEPLOY_WINDOW_SEC = float(os.getenv("GUARDIAN_DEPLOY_WINDOW", "120"))
 _deploying_until = 0.0
 
+# «Предохранитель» против ошибок хоста (напр. disk I/O error → бот жив, но сайт
+# отдаёт 500). После FAIL_THRESHOLD ошибок апстрима (5xx/обрыв) за FAIL_WINDOW секунд
+# guardian уходит в режим техработ на UNHEALTHY_COOLDOWN секунд, чтобы юзеры не тыкали
+# в сломанный сайт. По истечении окна следующий запрос снова пробует апстрим —
+# если хост ожил, сайт возвращается сам.
+FAIL_THRESHOLD = int(os.getenv("GUARDIAN_FAIL_THRESHOLD", "2"))
+FAIL_WINDOW_SEC = float(os.getenv("GUARDIAN_FAIL_WINDOW", "30"))
+UNHEALTHY_COOLDOWN_SEC = float(os.getenv("GUARDIAN_UNHEALTHY_COOLDOWN", "30"))
+_fail_times = []
+_unhealthy_until = 0.0
+
+
+def _unhealthy_active():
+    return time.time() < _unhealthy_until
+
+
+def _record_failure(reason=""):
+    """Фиксирует ошибку апстрима; при превышении порога — включает режим техработ."""
+    global _unhealthy_until
+    now = time.time()
+    _fail_times.append(now)
+    cutoff = now - FAIL_WINDOW_SEC
+    while _fail_times and _fail_times[0] < cutoff:
+        _fail_times.pop(0)
+    if len(_fail_times) >= FAIL_THRESHOLD and not _unhealthy_active():
+        _unhealthy_until = now + UNHEALTHY_COOLDOWN_SEC
+        _fail_times.clear()
+        log(f"апстрим нездоров ({reason}) — режим техработ на {int(UNHEALTHY_COOLDOWN_SEC)}с")
+
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -143,6 +172,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._guardian_route(path)
         if _deploying_active():
             return self._serve_updating()
+        if _unhealthy_active():
+            return self._serve_maintenance()
         self._proxy()
 
     def _guardian_route(self, path):
@@ -212,14 +243,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conn.close()
         except Exception as e:
             log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {type(e).__name__}: {e}")
+            _record_failure(f"обрыв соединения: {type(e).__name__}")
             return self._serve_maintenance()
 
-        if resp.status in (502, 503, 504):
+        # Любая 5xx (500 — напр. disk I/O error на хосте; 502/503/504 — слот недоступен)
+        # считается сбоем: показываем заглушку и копим в предохранитель.
+        if resp.status >= 500:
             log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
+            _record_failure(f"HTTP {resp.status}")
             return self._serve_maintenance()
 
         if _looks_down(resp.status, data):
             log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
+            _record_failure("Bothost 404 (слот лежит)")
             return self._serve_maintenance()
 
         self.send_response(resp.status)
