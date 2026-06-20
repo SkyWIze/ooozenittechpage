@@ -40,6 +40,7 @@ VERIFY_SSL = os.getenv("GUARDIAN_VERIFY_SSL", "1").strip().lower() not in ("0", 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAINT_FILE = os.path.join(BASE_DIR, "guardian_maintenance.html")
+HOSTERR_FILE = os.path.join(BASE_DIR, "guardian_hosterror.html")
 UPDATING_FILE = os.path.join(BASE_DIR, "guardian_updating.html")
 LOGO_FILE = os.path.join(BASE_DIR, "logo", "zenit-logo.png")
 FAVICON_FILE = os.path.join(BASE_DIR, "logo", "zenit-favicon.png")
@@ -173,7 +174,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if _deploying_active():
             return self._serve_updating()
         if _unhealthy_active():
-            return self._serve_maintenance()
+            # Предохранитель тикает только от 500 (хост-ошибка) → показываем её страницу.
+            return self._serve_host_error()
         self._proxy()
 
     def _guardian_route(self, path):
@@ -242,20 +244,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = resp.read()
             conn.close()
         except Exception as e:
+            # Обрыв/таймаут — обычно редеплой или стоп слота: нейтральная заглушка.
             log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {type(e).__name__}: {e}")
-            _record_failure(f"обрыв соединения: {type(e).__name__}")
             return self._serve_maintenance()
 
-        # Любая 5xx (500 — напр. disk I/O error на хосте; 502/503/504 — слот недоступен)
-        # считается сбоем: показываем заглушку и копим в предохранитель.
-        if resp.status >= 500:
+        # 500 — бот ЖИВ, но ошибка приложения (часто disk I/O error на хосте):
+        # отдельная страница «проблемы на стороне хостинга» + предохранитель.
+        if resp.status == 500:
+            log(f"UPSTREAM 500 {self.command} {self.path} -> {UPSTREAM_URL}")
+            _record_failure("HTTP 500")
+            return self._serve_host_error()
+
+        # 502/503/504 — слот недоступен (редеплой/стоп): нейтральная заглушка, без предохранителя.
+        if resp.status in (502, 503, 504):
             log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
-            _record_failure(f"HTTP {resp.status}")
             return self._serve_maintenance()
 
         if _looks_down(resp.status, data):
             log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
-            _record_failure("Bothost 404 (слот лежит)")
             return self._serve_maintenance()
 
         self.send_response(resp.status)
@@ -291,6 +297,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = _read_file(MAINT_FILE)
         except Exception:
             data = b"<h1>Site temporarily unavailable</h1>"
+        self.send_response(503)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Retry-After", "10")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+        self.close_connection = True
+
+    def _serve_host_error(self):
+        try:
+            data = _read_file(HOSTERR_FILE)
+        except Exception:
+            data = b"<h1>Site temporarily unavailable (host issue)</h1>"
         self.send_response(503)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
