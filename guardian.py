@@ -53,6 +53,15 @@ GUARDIAN_TOKEN = os.getenv("GUARDIAN_TOKEN", "").strip()
 DEPLOY_WINDOW_SEC = float(os.getenv("GUARDIAN_DEPLOY_WINDOW", "120"))
 _deploying_until = 0.0
 
+# Кэш статических файлов в памяти
+# Структура: path -> {"status": int, "headers": list, "data": bytes}
+_static_cache = {}
+
+CACHEABLE_EXTENSIONS = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".svg", 
+    ".ico", ".woff", ".woff2", ".ttf", ".txt", ".xml"
+)
+
 # «Предохранитель» против ошибок хоста (напр. disk I/O error → бот жив, но сайт
 # отдаёт 500). После FAIL_THRESHOLD ошибок апстрима (5xx/обрыв) за FAIL_WINDOW секунд
 # guardian уходит в режим техработ на UNHEALTHY_COOLDOWN секунд, чтобы юзеры не тыкали
@@ -211,7 +220,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._send_json(200, {"ok": True, "deploying_for_sec": int(secs)})
 
     def _ready_control(self):
-        global _deploying_until
+        global _deploying_until, _static_cache
         if not GUARDIAN_TOKEN:
             return self._send_json(403, {"error": "GUARDIAN_TOKEN не задан"})
         qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
@@ -219,11 +228,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(403, {"error": "неверный токен"})
         was = _deploying_active()
         _deploying_until = 0.0
-        if was:
-            log("бот сообщил о готовности — режим обновления снят")
-        return self._send_json(200, {"ok": True, "deploying": False})
+        _static_cache.clear()
+        log("бот сообщил о готовности — режим обновления снят, кэш статики ОЧИЩЕН")
+        return self._send_json(200, {"ok": True, "deploying": False, "cache_cleared": True})
 
     def _proxy(self):
+        path = self.path.split("?", 1)[0]
+        is_get = (self.command == "GET")
+        is_cacheable = is_get and path.lower().endswith(CACHEABLE_EXTENSIONS)
+
+        # 1. Проверяем кэш статики в памяти
+        if is_cacheable and path in _static_cache:
+            cached = _static_cache[path]
+            # log(f"CACHE HIT: {path}")
+            self.send_response(cached["status"])
+            for k, v in cached["headers"]:
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(cached["data"])))
+            self.send_header("X-Cache", "HIT-Guardian")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(cached["data"])
+            self.close_connection = True
+            return
+
         # читаем тело запроса (если есть)
         body = None
         length = self.headers.get("Content-Length")
@@ -263,6 +292,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if _looks_down(resp.status, data):
             log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
             return self._serve_maintenance()
+
+        # 2. Сохраняем успешный ответ статики в кэш
+        if is_cacheable and resp.status == 200:
+            cached_headers = [
+                (k, v) for k, v in resp.getheaders()
+                if k.lower() not in HOP_BY_HOP and k.lower() not in ("content-length", "connection")
+            ]
+            _static_cache[path] = {
+                "status": resp.status,
+                "headers": cached_headers,
+                "data": data
+            }
+            log(f"CACHE MISS & SAVE: {path} ({len(data)} bytes)")
 
         self.send_response(resp.status)
         for k, v in resp.getheaders():
