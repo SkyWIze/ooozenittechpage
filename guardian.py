@@ -31,7 +31,7 @@ from urllib.parse import urlsplit, parse_qs
 # --- Конфигурация -------------------------------------------------------------
 PORT = int(os.getenv("PORT", "3000"))
 UPSTREAM_URL = os.getenv("UPSTREAM_URL", "").strip().rstrip("/")
-UPSTREAM_TIMEOUT = float(os.getenv("GUARDIAN_TIMEOUT", "30"))
+UPSTREAM_TIMEOUT = float(os.getenv("GUARDIAN_TIMEOUT", "90"))
 HEALTH_TIMEOUT = 4.0
 # Проверять SSL-сертификат бота? Выключи (0/false), если UPSTREAM_URL — это https
 # по «голому» IP: сертификат выписан на домен и не совпадёт с IP. Guardian ходит
