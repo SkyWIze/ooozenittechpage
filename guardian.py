@@ -134,7 +134,12 @@ def _record_failure(reason=""):
         
         # Фоновое оповещение в ВК
         import threading
-        msg = f"⚠️ [Guardian] Сайт ooo-zenitprov.ru временно закрыт заглушкой!\nПричина: {reason}\nСайт автоматически вернется в строй, как только апстрим оживет."
+        msg = (
+            "🤖 Ассистент Ева | ООО «ЗЕНИТ»\n\n"
+            "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
+            "🛡️ Прокси-привратник Guardian временно перенаправляет пользователей на заглушку во избежание сбоев. "
+            "Мы уже работаем над восстановлением соединения."
+        )
         threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
@@ -349,7 +354,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _was_unhealthy = False
             log("✅ Связь с апстримом восстановлена — сайт снова работает!")
             import threading
-            msg = "✅ [Guardian] Связь восстановлена — сайт ooo-zenitprov.ru снова работает в штатном режиме."
+            msg = (
+                "🤖 Ассистент Ева | ООО «ЗЕНИТ»\n\n"
+                "✅ Связь с сервером успешно восстановлена! Сайт ooo-zenitprov.ru снова работает в штатном режиме.\n\n"
+                "🛡️ Все системы функционируют стабильно. Заглушка техработ автоматически отключена."
+            )
             threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
         # 2. Сохраняем успешный ответ статики в кэш
