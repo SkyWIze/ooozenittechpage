@@ -30,6 +30,26 @@ import urllib.request
 import urllib.parse
 from urllib.parse import urlsplit, parse_qs
 
+def load_dotenv(dotenv_path):
+    """Собственный парсер .env на чистом Python для сохранения нулевых зависимостей."""
+    if os.path.exists(dotenv_path):
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"').strip("'")
+                        os.environ[k] = v
+        except Exception as e:
+            print(f"[guardian] не удалось загрузить .env: {e}", flush=True)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 # --- Конфигурация -------------------------------------------------------------
 PORT = int(os.getenv("PORT", "3000"))
 UPSTREAM_URL = os.getenv("UPSTREAM_URL", "").strip().rstrip("/")
@@ -40,7 +60,6 @@ HEALTH_TIMEOUT = 4.0
 # к своему же бэкенду, так что отключение проверки тут безопасно.
 VERIFY_SSL = os.getenv("GUARDIAN_VERIFY_SSL", "1").strip().lower() not in ("0", "false", "no")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MAINT_FILE = os.path.join(BASE_DIR, "guardian_maintenance.html")
 HOSTERR_FILE = os.path.join(BASE_DIR, "guardian_hosterror.html")
 UPDATING_FILE = os.path.join(BASE_DIR, "guardian_updating.html")
@@ -135,10 +154,9 @@ def _record_failure(reason=""):
         # Фоновое оповещение в ВК
         import threading
         msg = (
-            "🤖 Ассистент Ева | ООО «ЗЕНИТ»\n\n"
             "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
-            "🛡️ Прокси-привратник Guardian временно перенаправляет пользователей на заглушку во избежание сбоев. "
-            "Мы уже работаем над восстановлением соединения."
+            "🛡️ Прокси-сервер Guardian временно закрыл доступ к сайту и боту "
+            "Скоро все придет в норму (надеюсь)."
         )
         threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
