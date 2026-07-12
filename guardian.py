@@ -26,6 +26,8 @@ import socketserver
 import ssl
 import time
 import http.server
+import urllib.request
+import urllib.parse
 from urllib.parse import urlsplit, parse_qs
 
 # --- Конфигурация -------------------------------------------------------------
@@ -69,18 +71,56 @@ CACHEABLE_EXTENSIONS = (
 # если хост ожил, сайт возвращается сам.
 FAIL_THRESHOLD = int(os.getenv("GUARDIAN_FAIL_THRESHOLD", "2"))
 FAIL_WINDOW_SEC = float(os.getenv("GUARDIAN_FAIL_WINDOW", "30"))
-UNHEALTHY_COOLDOWN_SEC = float(os.getenv("GUARDIAN_UNHEALTHY_COOLDOWN", "30"))
+UNHEALTHY_COOLDOWN_SEC = float(os.getenv("GUARDIAN_UNHEALTHY_COOLDOWN", "120"))
 _fail_times = []
 _unhealthy_until = 0.0
+_was_unhealthy = False
 
 
 def _unhealthy_active():
     return time.time() < _unhealthy_until
 
 
+def _send_vk_notification(message):
+    """Отправляет служебное уведомление в тех-чат ВК."""
+    token = os.getenv("BOT_TOKEN", "").strip()
+    peer_id_str = os.getenv("TECH_CHAT_PEER", "2000000001").strip()
+    if not token or not peer_id_str:
+        log("VK-оповещение пропущено: BOT_TOKEN или TECH_CHAT_PEER не заданы")
+        return
+    try:
+        peer_id = int(peer_id_str)
+    except ValueError:
+        log(f"Некорректный TECH_CHAT_PEER: {peer_id_str}")
+        return
+
+    try:
+        url = "https://api.vk.com/method/messages.send"
+        params = {
+            "peer_id": peer_id,
+            "message": message,
+            "random_id": 0,
+            "access_token": token,
+            "v": "5.131"
+        }
+        data = urllib.parse.urlencode(params).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+            resp_data = json.loads(response.read().decode("utf-8"))
+            if "error" in resp_data:
+                log(f"Ошибка VK API при отправке уведомления: {resp_data['error']}")
+            else:
+                log("VK-оповещение успешно отправлено в тех-чат")
+    except Exception as e:
+        log(f"Не удалось отправить VK-оповещение: {type(e).__name__}: {e}")
+
+
 def _record_failure(reason=""):
     """Фиксирует ошибку апстрима; при превышении порога — включает режим техработ."""
-    global _unhealthy_until
+    global _unhealthy_until, _was_unhealthy
     now = time.time()
     _fail_times.append(now)
     cutoff = now - FAIL_WINDOW_SEC
@@ -89,7 +129,13 @@ def _record_failure(reason=""):
     if len(_fail_times) >= FAIL_THRESHOLD and not _unhealthy_active():
         _unhealthy_until = now + UNHEALTHY_COOLDOWN_SEC
         _fail_times.clear()
+        _was_unhealthy = True
         log(f"апстрим нездоров ({reason}) — режим техработ на {int(UNHEALTHY_COOLDOWN_SEC)}с")
+        
+        # Фоновое оповещение в ВК
+        import threading
+        msg = f"⚠️ [Guardian] Сайт ooo-zenitprov.ru временно закрыт заглушкой!\nПричина: {reason}\nСайт автоматически вернется в строй, как только апстрим оживет."
+        threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
 HOP_BY_HOP = {
@@ -274,24 +320,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conn.close()
         except Exception as e:
             # Обрыв/таймаут — обычно редеплой или стоп слота: нейтральная заглушка.
-            log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {type(e).__name__}: {e}")
+            reason = f"{type(e).__name__}: {e}"
+            log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {reason}")
+            _record_failure(f"Сбой подключения: {reason}")
             return self._serve_maintenance()
 
         # 500 — бот ЖИВ, но ошибка приложения (часто disk I/O error на хосте):
         # отдельная страница «проблемы на стороне хостинга» + предохранитель.
         if resp.status == 500:
             log(f"UPSTREAM 500 {self.command} {self.path} -> {UPSTREAM_URL}")
-            _record_failure("HTTP 500")
+            _record_failure("HTTP 500 (ошибка диска/БД)")
             return self._serve_host_error()
 
-        # 502/503/504 — слот недоступен (редеплой/стоп): нейтральная заглушка, без предохранителя.
+        # 502/503/504 — слот недоступен (редеплой/стоп): нейтральная заглушка + предохранитель.
         if resp.status in (502, 503, 504):
             log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
+            _record_failure(f"HTTP {resp.status} (сервер недоступен)")
             return self._serve_maintenance()
 
         if _looks_down(resp.status, data):
             log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
+            _record_failure("Bothost 404 (контейнер выключен)")
             return self._serve_maintenance()
+
+        # Успешный ответ (связь восстановлена)
+        global _was_unhealthy
+        if _was_unhealthy:
+            _was_unhealthy = False
+            log("✅ Связь с апстримом восстановлена — сайт снова работает!")
+            import threading
+            msg = "✅ [Guardian] Связь восстановлена — сайт ooo-zenitprov.ru снова работает в штатном режиме."
+            threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
         # 2. Сохраняем успешный ответ статики в кэш
         if is_cacheable and resp.status == 200:
