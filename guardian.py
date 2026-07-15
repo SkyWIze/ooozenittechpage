@@ -204,7 +204,17 @@ def _looks_down(status, body):
 
 def upstream_up():
     """Быстрая проверка доступности бота (для авто-перезагрузки страницы)."""
+    global _was_unhealthy
     ok, _ = _probe_upstream(HEALTH_TIMEOUT)
+    if ok and _was_unhealthy:
+        _was_unhealthy = False
+        log("✅ Связь с апстримом восстановлена — сайт снова работает!")
+        import threading
+        msg = (
+            "✅ Связь с сервером успешно восстановлена! Сайт ooo-zenitprov.ru снова работает в штатном режиме.\n\n"
+            "🛡️ Все системы функционируют стабильно. Заглушка техработ автоматически отключена."
+        )
+        threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
     return ok
 
 
@@ -214,7 +224,7 @@ def _probe_upstream(timeout):
         return False, "UPSTREAM_URL не задан"
     try:
         conn = _open_upstream(timeout)
-        conn.request("GET", "/", headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
+        conn.request("GET", "/ping", headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
         resp = conn.getresponse()
         body = resp.read()
         conn.close()
@@ -366,18 +376,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _record_failure("Bothost 404 (контейнер выключен)")
             return self._serve_maintenance()
 
-        # Успешный ответ (связь восстановлена)
-        global _was_unhealthy
-        if _was_unhealthy:
-            _was_unhealthy = False
-            log("✅ Связь с апстримом восстановлена — сайт снова работает!")
-            import threading
-            msg = (
-                "🤖 Ассистент Ева | ООО «ЗЕНИТ»\n\n"
-                "✅ Связь с сервером успешно восстановлена! Сайт ooo-zenitprov.ru снова работает в штатном режиме.\n\n"
-                "🛡️ Все системы функционируют стабильно. Заглушка техработ автоматически отключена."
-            )
-            threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
+
 
         # 2. Сохраняем успешный ответ статики в кэш
         if is_cacheable and resp.status == 200:
