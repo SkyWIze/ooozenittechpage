@@ -137,7 +137,7 @@ def _send_vk_notification(message):
         log(f"Не удалось отправить VK-оповещение: {type(e).__name__}: {e}")
 
 
-def _record_failure(reason=""):
+def _record_failure(reason="", send_notification=True):
     """Фиксирует ошибку апстрима; при превышении порога — включает режим техработ."""
     global _unhealthy_until, _was_unhealthy
     now = time.time()
@@ -148,17 +148,18 @@ def _record_failure(reason=""):
     if len(_fail_times) >= FAIL_THRESHOLD and not _unhealthy_active():
         _unhealthy_until = now + UNHEALTHY_COOLDOWN_SEC
         _fail_times.clear()
-        _was_unhealthy = True
         log(f"апстрим нездоров ({reason}) — режим техработ на {int(UNHEALTHY_COOLDOWN_SEC)}с")
         
-        # Фоновое оповещение в ВК
-        import threading
-        msg = (
-            "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
-            "🛡️ Прокси-сервер Guardian временно закрыл доступ к сайту и боту "
-            "Скоро все придет в норму (надеюсь)."
-        )
-        threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
+        if send_notification:
+            _was_unhealthy = True
+            # Фоновое оповещение в ВК
+            import threading
+            msg = (
+                "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
+                "🛡️ Прокси-сервер Guardian временно закрыл доступ к сайту и боту "
+                "Скоро все придет в норму (надеюсь)."
+            )
+            threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
 HOP_BY_HOP = {
@@ -355,7 +356,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # Обрыв/таймаут — обычно редеплой или стоп слота: нейтральная заглушка.
             reason = f"{type(e).__name__}: {e}"
             log(f"UPSTREAM FAIL {self.command} {self.path} -> {UPSTREAM_URL} (Host={_up.netloc}): {reason}")
-            _record_failure(f"Сбой подключения: {reason}")
+            _record_failure(f"Сбой подключения: {reason}", send_notification=False)
             return self._serve_maintenance()
 
         # 500 — бот ЖИВ, но ошибка приложения (часто disk I/O error на хосте):
@@ -368,12 +369,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # 502/503/504 — слот недоступен (редеплой/стоп): нейтральная заглушка + предохранитель.
         if resp.status in (502, 503, 504):
             log(f"UPSTREAM {resp.status} {self.command} {self.path} -> {UPSTREAM_URL}")
-            _record_failure(f"HTTP {resp.status} (сервер недоступен)")
+            _record_failure(f"HTTP {resp.status} (сервер недоступен)", send_notification=False)
             return self._serve_maintenance()
 
         if _looks_down(resp.status, data):
             log(f"UPSTREAM DOWN (Bothost 404) {self.command} {self.path} -> {UPSTREAM_URL}")
-            _record_failure("Bothost 404 (контейнер выключен)")
+            _record_failure("Bothost 404 (контейнер выключен)", send_notification=False)
             return self._serve_maintenance()
 
 

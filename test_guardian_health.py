@@ -76,6 +76,22 @@ class TestGuardianHealth(unittest.TestCase):
         mock_send_vk.assert_not_called()
         print("[OK] No redundant recovery notifications if already healthy!")
 
+    @patch('guardian._send_vk_notification')
+    def test_record_failure_silent_mode(self, mock_send_vk):
+        print("\n[4/4] Check: Silent failure mode (no VK notifications, no recovery state)")
+        
+        # Заполняем порог ошибок для активации техработ
+        for _ in range(guardian.FAIL_THRESHOLD):
+            guardian._record_failure(reason="Silent test", send_notification=False)
+            
+        # Убедимся, что режим техработ включен
+        self.assertTrue(guardian._unhealthy_active())
+        # Убедимся, что уведомления не отправлялись
+        mock_send_vk.assert_not_called()
+        # Убедимся, что состояние аварии не выставилось в True
+        self.assertFalse(guardian._was_unhealthy)
+        print("[OK] Silent mode works: maintenance screen is active but VK notification is skipped!")
+
 if __name__ == "__main__":
     print("=== GUARDIAN MONITORING TESTS ===")
     suite = unittest.TestLoader().loadTestsFromTestCase(TestGuardianHealth)
