@@ -208,7 +208,7 @@ def upstream_up():
     ok, _ = _probe_upstream(HEALTH_TIMEOUT)
     if ok and _was_unhealthy:
         _was_unhealthy = False
-        log("✅ Связь с апстримом восстановлена — сайт снова работает!")
+        log("[OK] Связь с апстримом восстановлена — сайт снова работает!")
         import threading
         msg = (
             "✅ Связь с сервером успешно восстановлена! Сайт ooo-zenitprov.ru снова работает в штатном режиме.\n\n"
