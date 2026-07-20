@@ -24,6 +24,7 @@ import json
 import os
 import socketserver
 import ssl
+import sys
 import time
 import http.server
 import urllib.request
@@ -244,6 +245,17 @@ def _read_file(path):
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "ZenitGuardian"
+
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except OSError as e:
+            if getattr(e, "errno", None) in (32, 104, 103, 10054, 10053):
+                pass
+            else:
+                raise
 
     def log_message(self, fmt, *args):
         pass
@@ -483,6 +495,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        ex_type, ex_val, _ = sys.exc_info()
+        if ex_type in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        if isinstance(ex_val, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        if isinstance(ex_val, OSError) and getattr(ex_val, "errno", None) in (32, 104, 103, 10054, 10053):
+            return
+        super().handle_error(request, client_address)
 
 
 def main():
