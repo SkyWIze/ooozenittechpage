@@ -185,16 +185,17 @@ def _deploying_active():
     return time.time() < _deploying_until
 
 
-def _open_upstream(timeout):
+def _open_upstream(timeout, connect_timeout=5.0):
     """Создаёт соединение к боту по UPSTREAM_URL (http или https)."""
     if not _up:
         raise RuntimeError("UPSTREAM_URL не задан")
     host = _up.hostname
+    eff_timeout = min(timeout, connect_timeout) if connect_timeout else timeout
     if _up.scheme == "https":
         port = _up.port or 443
-        return http.client.HTTPSConnection(host, port, timeout=timeout, context=_ssl_ctx)
+        return http.client.HTTPSConnection(host, port, timeout=eff_timeout, context=_ssl_ctx)
     port = _up.port or 80
-    return http.client.HTTPConnection(host, port, timeout=timeout)
+    return http.client.HTTPConnection(host, port, timeout=eff_timeout)
 
 
 def _looks_down(status, body):
@@ -355,12 +356,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._serve_maintenance()
 
         try:
-            conn = _open_upstream(UPSTREAM_TIMEOUT)
+            conn = _open_upstream(UPSTREAM_TIMEOUT, connect_timeout=5.0)
             fwd_headers = {k: v for k, v in self.headers.items()
                            if k.lower() not in HOP_BY_HOP}
             # Host должен указывать на бота, иначе прокси Bothost не сроутит
             fwd_headers["Host"] = _up.netloc
             conn.request(self.command, self.path, body=body, headers=fwd_headers)
+            if conn.sock:
+                conn.sock.settimeout(UPSTREAM_TIMEOUT)
             resp = conn.getresponse()
             data = resp.read()
             conn.close()
