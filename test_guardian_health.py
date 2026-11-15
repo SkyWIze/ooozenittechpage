@@ -114,7 +114,8 @@ class GuardianHealthTests(unittest.TestCase):
     def test_ready_does_not_clear_deployment_when_page_fails(self, probe):
         probe.side_effect = [(True, "HTTP 200"), (False, "HTTP 502")]
         handler = guardian.Handler.__new__(guardian.Handler)
-        handler.path = "/__guardian/ready?token=secret"
+        handler.path = "/__guardian/ready"
+        handler.headers = {"X-Guardian-Token": "secret"}
         handler._send_json = MagicMock()
         with patch.object(guardian, "GUARDIAN_TOKEN", "secret"), patch.object(guardian, "_deploying_until", 500):
             handler._ready_control()

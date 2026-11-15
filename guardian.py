@@ -20,8 +20,11 @@ Guardian — «привратник» сайта ООО Зенит.
 """
 
 import http.client
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import socketserver
 import ssl
 import sys
@@ -30,6 +33,7 @@ import time
 import http.server
 import urllib.request
 import urllib.parse
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit, parse_qs
 
 def load_dotenv(dotenv_path):
@@ -67,6 +71,7 @@ HOSTERR_FILE = os.path.join(BASE_DIR, "guardian_hosterror.html")
 UPDATING_FILE = os.path.join(BASE_DIR, "guardian_updating.html")
 LOGO_FILE = os.path.join(BASE_DIR, "logo", "zenit-logo.png")
 FAVICON_FILE = os.path.join(BASE_DIR, "logo", "zenit-favicon.png")
+ACCESS_FILE = os.path.join(BASE_DIR, "guardian_access.html")
 
 # Режим «идёт обновление»: бот при старте пингует /__guardian/deploying → включается
 # страница обновления; когда бот реально поднялся, он пингует /__guardian/ready →
@@ -100,10 +105,61 @@ _failure_mode = "unavailable"
 _state_lock = threading.Lock()
 _recovery_probe_lock = threading.Lock()
 _failure_generation = 0
+_manual_locked = False
+_manual_code_digest = ""
+_manual_generation = ""
+_code_attempts = {}
+ACCESS_COOKIE = "guardian_access"
+ACCESS_SESSION_SEC = 12 * 60 * 60
 
 
 def _unhealthy_active():
     return _recovery_pending
+
+
+def _manual_code_valid(code):
+    digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    with _state_lock:
+        return _manual_locked and bool(_manual_code_digest) and hmac.compare_digest(digest, _manual_code_digest)
+
+
+def _manual_cookie_value():
+    with _state_lock:
+        generation = _manual_generation
+    expiry = str(int(time.time()) + ACCESS_SESSION_SEC)
+    payload = f"{generation}.{expiry}"
+    signature = hmac.new(GUARDIAN_TOKEN.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def _manual_cookie_valid(header):
+    if not GUARDIAN_TOKEN:
+        return False
+    try:
+        cookies = SimpleCookie()
+        cookies.load(header or "")
+        value = cookies[ACCESS_COOKIE].value
+        generation, expiry, signature = value.split(".")
+        if int(expiry) < time.time():
+            return False
+        payload = f"{generation}.{expiry}"
+        expected = hmac.new(GUARDIAN_TOKEN.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).hexdigest()
+        with _state_lock:
+            return _manual_locked and generation == _manual_generation and hmac.compare_digest(signature, expected)
+    except (CookieError, KeyError, ValueError, TypeError):
+        return False
+
+
+def _code_attempt_allowed(address):
+    now = time.time()
+    with _state_lock:
+        recent = [stamp for stamp in _code_attempts.get(address, []) if now - stamp < 60]
+        if len(recent) >= 8:
+            _code_attempts[address] = recent
+            return False
+        recent.append(now)
+        _code_attempts[address] = recent
+        return True
 
 
 def _send_vk_notification(message):
@@ -261,7 +317,7 @@ def upstream_up():
         _recovery_successes = 0
         _fail_times.clear()
         _failure_mode = "unavailable"
-        notify = _was_unhealthy
+        notify = _was_unhealthy and not _manual_locked
         _was_unhealthy = False
     log("[OK] Бот и сайт устойчиво доступны — заглушка снята")
     if notify:
@@ -322,6 +378,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.startswith("/__guardian/"):
             return self._guardian_route(path)
+        if _manual_locked and not _manual_cookie_valid(self.headers.get("Cookie")):
+            return self._serve_access()
         if _deploying_active():
             return self._serve_maintenance()
         if _unhealthy_active():
@@ -332,8 +390,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _guardian_route(self, path):
         if path == "/__guardian/health":
             # В окне обновления тоже считаем «не готов», чтобы страница не уехала раньше.
-            up = (not _deploying_active()) and upstream_up()
+            allowed = not _manual_locked or _manual_cookie_valid(self.headers.get("Cookie"))
+            up = allowed and not _deploying_active() and upstream_up()
             return self._send_json(200 if up else 503, {"up": up})
+        if path == "/__guardian/access":
+            return self._access_control()
+        if path == "/__guardian/manual":
+            return self._manual_control()
         if path == "/__guardian/deploying":
             return self._deploying_control()
         if path == "/__guardian/ready":
@@ -344,13 +407,110 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_static(FAVICON_FILE, "image/png")
         return self._send_json(404, {"error": "not found"})
 
+    def _manual_control(self):
+        global _manual_locked, _manual_code_digest, _manual_generation
+        if not self._guardian_token_valid(allow_query=False):
+            return self._send_json(403, {"error": "access denied"})
+        if self.command == "GET":
+            return self._send_json(200, {"ok": True, "manual_locked": _manual_locked})
+        if self.command != "POST":
+            return self._send_json(405, {"error": "method not allowed"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 1024:
+                raise ValueError("invalid length")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            action = payload.get("action")
+            if action not in ("close", "open"):
+                raise ValueError("invalid action")
+            code = str(payload.get("code") or "")
+            if action == "close" and len(code) < 16:
+                raise ValueError("code is too short")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return self._send_json(400, {"error": "invalid request"})
+        with _state_lock:
+            if action == "close":
+                _manual_code_digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+                _manual_generation = secrets.token_hex(16)
+                _manual_locked = True
+                _code_attempts.clear()
+            else:
+                _manual_locked = False
+                _manual_code_digest = ""
+                _manual_generation = ""
+                _code_attempts.clear()
+        log(f"ручная заглушка {'включена' if action == 'close' else 'снята'}")
+        return self._send_json(200, {"ok": True, "manual_locked": _manual_locked})
+
+    def _guardian_token_valid(self, allow_query=True):
+        token = self.headers.get("X-Guardian-Token", "")
+        if not token and allow_query and "?" in self.path:
+            qs = parse_qs(self.path.split("?", 1)[1])
+            token = (qs.get("token") or [""])[0]
+        return bool(GUARDIAN_TOKEN) and hmac.compare_digest(
+            token.encode("utf-8"), GUARDIAN_TOKEN.encode("utf-8")
+        )
+
+    def _access_control(self):
+        if not _manual_locked:
+            return self._redirect_home()
+        if _manual_cookie_valid(self.headers.get("Cookie")):
+            return self._redirect_home()
+        if self.command == "GET":
+            return self._serve_access()
+        if self.command != "POST":
+            return self._send_json(405, {"error": "method not allowed"})
+        if not _code_attempt_allowed(self.client_address[0]):
+            return self._serve_access(error="Слишком много попыток. Попробуйте через минуту.")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 512:
+                raise ValueError("invalid length")
+            form = parse_qs(self.rfile.read(length).decode("utf-8"))
+            code = (form.get("code") or [""])[0].strip()
+        except (ValueError, UnicodeDecodeError):
+            return self._serve_access(error="Проверьте код и попробуйте ещё раз.")
+        if not _manual_code_valid(code):
+            return self._serve_access(error="Неверный код. Проверьте сообщение в ВК.")
+        return self._redirect_home(_manual_cookie_value())
+
+    def _redirect_home(self, cookie=None):
+        self.send_response(303)
+        self.send_header("Location", "/")
+        if cookie:
+            self.send_header("Set-Cookie", f"{ACCESS_COOKIE}={cookie}; Path=/; Max-Age={ACCESS_SESSION_SEC}; Secure; HttpOnly; SameSite=Lax")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    def _serve_access(self, error=""):
+        try:
+            data = _read_file(ACCESS_FILE)
+        except OSError:
+            data = b"<h1>Site temporarily unavailable</h1>"
+        message = f'<p class="form-error" role="alert">{error}</p>'.encode("utf-8") if error else b""
+        data = data.replace(b"<!-- ACCESS_ERROR -->", message)
+        self.send_response(503)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+        self.close_connection = True
+
     def _deploying_control(self):
         global _deploying_until
         if not GUARDIAN_TOKEN:
             return self._send_json(403, {"error": "GUARDIAN_TOKEN не задан"})
-        qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
-        if (qs.get("token") or [""])[0] != GUARDIAN_TOKEN:
+        if not self._guardian_token_valid():
             return self._send_json(403, {"error": "неверный токен"})
+        qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
         secs = DEPLOY_WINDOW_SEC
         if qs.get("seconds"):
             try:
@@ -365,8 +525,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         global _deploying_until, _static_cache
         if not GUARDIAN_TOKEN:
             return self._send_json(403, {"error": "GUARDIAN_TOKEN не задан"})
-        qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
-        if (qs.get("token") or [""])[0] != GUARDIAN_TOKEN:
+        if not self._guardian_token_valid():
             return self._send_json(403, {"error": "неверный токен"})
         ping_ok, _ = _probe_upstream(HEALTH_TIMEOUT)
         page_ok = _probe_upstream(HEALTH_TIMEOUT, "/")[0] if ping_ok else False
