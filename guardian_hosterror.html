@@ -1,112 +1,233 @@
 <!DOCTYPE html>
-<html lang="ru" translate="no">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex">
-    <title>ООО Зенит — технические неполадки</title>
+    <meta name="theme-color" content="#080e1a">
+    <title>Сайт временно недоступен — ООО Зенит</title>
     <link rel="icon" type="image/png" href="/__guardian/favicon.png">
     <style>
         :root {
-            --accent: #f6b65b;
-            --glow: rgba(246, 182, 91, 0.45);
+            color-scheme: dark;
+            --blue: #8aa7ff;
+            --blue-bright: #b0c1ff;
+            --text: #f3f7ff;
+            --muted: #a5b4cb;
+            --line: rgba(181, 207, 246, .16);
         }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        html, body { height: 100%; }
+        *, *::before, *::after { box-sizing: border-box; }
+        html { min-height: 100%; background: #080e1a; }
         body {
-            font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
-            background: radial-gradient(circle at 50% 38%, #1a140f 0%, #0b0705 100%);
-            color: #f9f1e8;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             min-height: 100vh;
-            padding: 24px;
+            min-height: 100svh;
+            margin: 0;
+            overflow-x: hidden;
+            color: var(--text);
+            background:
+                radial-gradient(ellipse 55% 70% at 83% 49%, rgba(30, 90, 190, .23), transparent 73%),
+                radial-gradient(ellipse 62% 55% at 5% 106%, rgba(24, 64, 126, .19), transparent 70%),
+                #080e1a;
+            font-family: "Segoe UI", Inter, system-ui, sans-serif;
             -webkit-font-smoothing: antialiased;
         }
-        .card {
+        .scene {
+            position: fixed;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .scene::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(155, 191, 241, .045) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(155, 191, 241, .045) 1px, transparent 1px);
+            background-size: 88px 88px;
+            mask-image: linear-gradient(90deg, transparent 9%, #000 73%);
+        }
+        .scene::after {
+            content: "";
+            position: absolute;
+            width: min(70vw, 1000px);
+            aspect-ratio: 1;
+            right: -13%;
+            top: 50%;
+            transform: translateY(-50%) rotate(-18deg);
+            border: 1px solid rgba(112, 168, 255, .13);
+            border-radius: 50%;
+            box-shadow: 0 0 0 13vw rgba(67, 123, 228, .025), 0 0 0 26vw rgba(67, 123, 228, .018);
+        }
+        .emblem {
+            position: absolute;
+            width: min(57vw, 800px);
+            height: auto;
+            right: -2%;
+            top: 50%;
+            transform: translateY(-50%) rotate(-10deg);
+            opacity: .13;
+            filter: drop-shadow(0 0 90px rgba(63, 137, 255, .52));
+        }
+        .shell {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
             width: 100%;
-            max-width: 460px;
-            text-align: center;
-            background: linear-gradient(160deg, rgba(42,32,20,0.92), rgba(26,17,11,0.96));
-            border: 1px solid rgba(246,182,91,0.16);
-            border-radius: 26px;
-            padding: 44px 34px 34px;
-            box-shadow: 0 30px 70px rgba(0,0,0,0.45);
-            animation: rise 0.5s ease both;
+            max-width: 1920px;
+            min-height: 100vh;
+            min-height: 100svh;
+            margin: 0 auto;
+            padding: 42px clamp(28px, 6.3vw, 120px) 34px;
         }
-        @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
-        .logo-wrap {
-            width: 96px; height: 96px;
-            margin: 0 auto 22px;
-            display: flex; align-items: center; justify-content: center;
+        .topbar, .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
         }
-        .logo-wrap img {
-            width: 100%; height: 100%;
-            object-fit: contain;
-            filter: drop-shadow(0 4px 18px var(--glow));
-            animation: float 3.2s ease-in-out infinite;
+        .brand { display: inline-flex; align-items: center; gap: 13px; color: inherit; text-decoration: none; }
+        .brand img { width: 44px; height: 44px; object-fit: contain; }
+        .brand-name { display: block; font-size: 16px; font-weight: 800; letter-spacing: .075em; }
+        .brand-sub { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .2em; }
+        .top-status, .eyebrow, .status-label, .footer {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .16em;
+            text-transform: uppercase;
         }
-        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+        .top-status { display: inline-flex; align-items: center; gap: 11px; color: #b8c9df; }
+        .status-light {
+            width: 7px;
+            height: 7px;
+            flex: none;
+            border-radius: 50%;
+            background: var(--blue);
+            box-shadow: 0 0 0 5px rgba(93, 162, 255, .1), 0 0 18px rgba(93, 162, 255, .75);
+            animation: breathe 2.2s ease-in-out infinite;
+        }
+        @keyframes breathe { 50% { opacity: .45; box-shadow: 0 0 0 9px rgba(93, 162, 255, .03); } }
+        main {
+            display: flex;
+            flex: 1;
+            flex-direction: column;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 8vh 0 11vh;
+        }
+        .eyebrow {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 0 0 clamp(26px, 4.5vh, 52px);
+            color: var(--blue-bright);
+        }
+        .eyebrow::before { content: ""; width: 36px; height: 1px; background: currentColor; }
         h1 {
-            font-size: 1.55rem;
+            max-width: 13ch;
+            margin: 0;
+            font-size: clamp(58px, 8.1vw, 148px);
             font-weight: 800;
-            letter-spacing: 0.2px;
-            margin-bottom: 14px;
-            background: linear-gradient(120deg, #ffffff, #ffe2bc 60%, var(--accent));
-            -webkit-background-clip: text; background-clip: text;
-            -webkit-text-fill-color: transparent;
+            line-height: .94;
+            letter-spacing: -.075em;
         }
-        p { color: #ccb79f; line-height: 1.6; font-size: 1rem; }
-        .dots { display: inline-flex; gap: 6px; margin: 26px 0 8px; }
-        .dots span {
-            width: 9px; height: 9px; border-radius: 50%;
-            background: var(--accent); opacity: 0.35;
-            animation: pulse 1.4s ease-in-out infinite;
+        h1 span {
+            display: block;
+            color: var(--blue);
         }
-        .dots span:nth-child(2) { animation-delay: 0.2s; }
-        .dots span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes pulse { 0%,100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
-        .status { font-size: 0.86rem; color: #9d8b6f; margin-top: 4px; }
-        .vk-link {
-            display: inline-flex; align-items: center; gap: 8px;
-            margin-top: 28px; padding-top: 22px;
-            border-top: 1px solid rgba(255,255,255,0.06);
-            width: 100%; justify-content: center;
-            color: var(--accent); text-decoration: none; font-weight: 600;
-            transition: opacity 0.2s;
+        h1 .period { display: inline; color: var(--text); }
+        .description {
+            max-width: 480px;
+            margin: clamp(30px, 5vh, 54px) 0 0;
+            color: var(--muted);
+            font-size: clamp(16px, 1.3vw, 19px);
+            line-height: 1.6;
         }
-        .vk-link:hover { opacity: 0.8; }
+        .status-row { display: flex; align-items: center; gap: 18px; margin-top: 46px; }
+        .status-rule { width: 52px; height: 1px; background: var(--blue); }
+        .status-label { color: var(--blue-bright); }
+        .footer {
+            min-height: 62px;
+            border-top: 1px solid var(--line);
+            color: #8193ad;
+        }
+        .footer a {
+            color: var(--text);
+            text-decoration: none;
+            border-bottom: 1px solid rgba(243, 247, 255, .45);
+            padding: 4px 0;
+            transition: color .2s, border-color .2s;
+        }
+        .footer a:hover { color: var(--blue-bright); border-color: var(--blue-bright); }
+        .footer a:focus-visible, .brand:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 5px; }
+        @media (max-width: 700px) {
+            .shell { padding: 25px 24px 20px; }
+            .brand img { width: 38px; height: 38px; }
+            .brand-name { font-size: 14px; }
+            .brand-sub { font-size: 8px; }
+            .top-status { font-size: 0; gap: 0; }
+            main { justify-content: center; padding: 80px 0 90px; }
+            .eyebrow { margin-bottom: 30px; font-size: 10px; }
+            h1 { font-size: clamp(34px, 10vw, 68px); letter-spacing: -.07em; }
+            .description { max-width: 29ch; margin-top: 32px; font-size: 16px; }
+            .status-row { margin-top: 34px; }
+            .scene::after { width: 110vw; right: -59%; top: 40%; }
+            .emblem { width: 105vw; right: -39%; top: 39%; opacity: .08; }
+            .footer { align-items: flex-start; flex-direction: column; justify-content: center; gap: 11px; padding-top: 20px; font-size: 9px; }
+        }
+        @media (max-width: 370px) { .status-label { font-size: 10px; } }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <div class="logo-wrap">
-            <img src="/__guardian/logo.png" alt="ООО Зенит">
-        </div>
-        <h1>Сайт временно недоступен</h1>
-        <p>Проблемы на стороне хостинга — ожидаем решения.<br>Как только всё придёт в норму, страница откроется сама.</p>
-        <div class="dots"><span></span><span></span><span></span></div>
-        <div class="status" id="status">Ожидаем восстановления…</div>
-        <a class="vk-link" href="https://vk.com/zenit_s1" target="_blank" rel="noopener">
-            Наша группа ВКонтакте →
-        </a>
+    <div class="scene" aria-hidden="true"><img class="emblem" src="/__guardian/logo.png" alt=""></div>
+    <div class="shell">
+        <header class="topbar">
+            <div class="brand">
+                <img src="/__guardian/logo.png" alt="">
+                <span><span class="brand-name">ООО ЗЕНИТ</span><span class="brand-sub">ПОРТАЛ СОТРУДНИКОВ</span></span>
+            </div>
+            <div class="top-status"><span class="status-light"></span>ПРОВЕРЯЕМ СЕРВЕР</div>
+        </header>
+        <main>
+            <div class="eyebrow">ДОСТУП К ПОРТАЛУ</div>
+            <h1>Сайт временно<span>недоступен<span class="period">.</span></span></h1>
+            <p class="description">На сервере возникла ошибка. Мы проверяем состояние системы. Страница откроется сама после восстановления.</p>
+            <div class="status-row" role="status" aria-live="polite">
+                <span class="status-rule" aria-hidden="true"></span>
+                <span class="status-label" id="status">ОЖИДАЕМ ВОССТАНОВЛЕНИЯ</span>
+            </div>
+        </main>
+        <footer class="footer">
+            <span>© ООО ЗЕНИТ</span>
+            <a href="https://vk.com/zenit_s1" target="_blank" rel="noopener noreferrer">ГРУППА ВКОНТАКТЕ ↗</a>
+        </footer>
     </div>
     <script>
-        // Авто-перезагрузка: раз в 7с спрашиваем у guardian, ожил ли сайт.
-        function check() {
-            fetch('/__guardian/health', { cache: 'no-store' })
-                .then(function (r) { return r.ok ? r.json() : { up: false }; })
-                .then(function (j) {
-                    if (j && j.up) {
-                        document.getElementById('status').textContent = 'Сайт снова в сети, открываем…';
-                        location.reload();
-                    }
-                })
-                .catch(function () { /* всё ещё недоступно — ждём дальше */ });
-        }
-        setInterval(check, 7000);
-        setTimeout(check, 1500);
+        (function () {
+            var status = document.getElementById('status');
+            function check() {
+                var controller = new AbortController();
+                var timeout = setTimeout(function () { controller.abort(); }, 5000);
+                fetch('/__guardian/health', { cache: 'no-store', signal: controller.signal })
+                    .then(function (response) { return response.ok ? response.json() : { up: false }; })
+                    .then(function (result) {
+                        if (result && result.up) {
+                            status.textContent = 'ОТКРЫВАЕМ САЙТ';
+                            window.location.reload();
+                        }
+                    })
+                    .catch(function () {})
+                    .finally(function () {
+                        clearTimeout(timeout);
+                        setTimeout(check, 7000);
+                    });
+            }
+            setTimeout(check, 1500);
+        }());
     </script>
 </body>
 </html>
