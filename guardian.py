@@ -25,6 +25,7 @@ import os
 import socketserver
 import ssl
 import sys
+import threading
 import time
 import http.server
 import urllib.request
@@ -84,21 +85,25 @@ CACHEABLE_EXTENSIONS = (
     ".ico", ".woff", ".woff2", ".ttf", ".txt", ".xml"
 )
 
-# «Предохранитель» против ошибок хоста (напр. disk I/O error → бот жив, но сайт
-# отдаёт 500). После FAIL_THRESHOLD ошибок апстрима (5xx/обрыв) за FAIL_WINDOW секунд
-# guardian уходит в режим техработ на UNHEALTHY_COOLDOWN секунд, чтобы юзеры не тыкали
-# в сломанный сайт. По истечении окна следующий запрос снова пробует апстрим —
-# если хост ожил, сайт возвращается сам.
+# После нескольких ошибок показываем заглушку до трёх успешных проверок
+# /ping и главной страницы. Краткий ответ 200 не считается восстановлением.
 FAIL_THRESHOLD = int(os.getenv("GUARDIAN_FAIL_THRESHOLD", "2"))
 FAIL_WINDOW_SEC = float(os.getenv("GUARDIAN_FAIL_WINDOW", "30"))
-UNHEALTHY_COOLDOWN_SEC = float(os.getenv("GUARDIAN_UNHEALTHY_COOLDOWN", "120"))
+RECOVERY_SUCCESS_THRESHOLD = 3
+RECOVERY_PROBE_INTERVAL_SEC = 4.0
 _fail_times = []
-_unhealthy_until = 0.0
 _was_unhealthy = False
+_recovery_pending = False
+_recovery_successes = 0
+_recovery_last_probe = 0.0
+_failure_mode = "unavailable"
+_state_lock = threading.Lock()
+_recovery_probe_lock = threading.Lock()
+_failure_generation = 0
 
 
 def _unhealthy_active():
-    return time.time() < _unhealthy_until
+    return _recovery_pending
 
 
 def _send_vk_notification(message):
@@ -140,27 +145,35 @@ def _send_vk_notification(message):
 
 def _record_failure(reason="", send_notification=True):
     """Фиксирует ошибку апстрима; при превышении порога — включает режим техработ."""
-    global _unhealthy_until, _was_unhealthy
+    global _was_unhealthy, _recovery_pending
+    global _recovery_successes, _recovery_last_probe, _failure_mode, _failure_generation
     now = time.time()
-    _fail_times.append(now)
-    cutoff = now - FAIL_WINDOW_SEC
-    while _fail_times and _fail_times[0] < cutoff:
-        _fail_times.pop(0)
-    if len(_fail_times) >= FAIL_THRESHOLD and not _unhealthy_active():
-        _unhealthy_until = now + UNHEALTHY_COOLDOWN_SEC
-        _fail_times.clear()
-        log(f"апстрим нездоров ({reason}) — режим техработ на {int(UNHEALTHY_COOLDOWN_SEC)}с")
-        
-        if send_notification:
-            _was_unhealthy = True
-            # Фоновое оповещение в ВК
-            import threading
-            msg = (
-                "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
-                "🛡️ Прокси-сервер Guardian временно закрыл доступ к сайту и боту "
-                "Скоро все придет в норму (надеюсь)."
-            )
-            threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
+    notify = False
+    with _state_lock:
+        _failure_generation += 1
+        _recovery_successes = 0
+        _recovery_last_probe = 0.0
+        if not send_notification:
+            _failure_mode = "unavailable"
+        _fail_times.append(now)
+        cutoff = now - FAIL_WINDOW_SEC
+        while _fail_times and _fail_times[0] < cutoff:
+            _fail_times.pop(0)
+        if len(_fail_times) >= FAIL_THRESHOLD and not _recovery_pending:
+            _recovery_pending = True
+            _fail_times.clear()
+            if send_notification:
+                _failure_mode = "host"
+                _was_unhealthy = True
+                notify = True
+    if notify:
+        msg = (
+            "⚠️ Внимание: Обнаружены технические неполадки на сервере хостинга (ошибка базы данных или диска).\n\n"
+            "🛡️ Прокси-сервер Guardian временно закрыл доступ к сайту и боту."
+        )
+        threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
+    if _unhealthy_active():
+        log(f"апстрим нездоров ({reason}) — ждём устойчивого восстановления")
 
 # Заголовки, которые нельзя пробрасывать как есть (hop-by-hop).
 HOP_BY_HOP = {
@@ -206,34 +219,70 @@ def _looks_down(status, body):
 
 
 def upstream_up():
-    """Быстрая проверка доступности бота (для авто-перезагрузки страницы)."""
-    global _was_unhealthy
-    ok, _ = _probe_upstream(HEALTH_TIMEOUT)
-    if ok and _was_unhealthy:
+    """Снять заглушку только после устойчивой доступности бота и главной страницы."""
+    global _was_unhealthy, _recovery_pending
+    global _recovery_successes, _recovery_last_probe, _failure_mode
+    with _state_lock:
+        # Даже одна ошибка уже показала посетителю заглушку: не перезагружаем
+        # её после одного удачного ответа, пока доступность не устойчива.
+        pending = _recovery_pending or bool(_fail_times)
+        generation = _failure_generation
+        if pending and _recovery_last_probe and time.time() - _recovery_last_probe < RECOVERY_PROBE_INTERVAL_SEC:
+            return False
+    if pending and not _recovery_probe_lock.acquire(blocking=False):
+        return False
+    try:
+        ping_ok, ping_detail = _probe_upstream(HEALTH_TIMEOUT)
+        page_ok, page_detail = _probe_upstream(HEALTH_TIMEOUT, "/") if ping_ok else (False, "")
+        ok = ping_ok and page_ok
+    finally:
+        if pending:
+            _recovery_probe_lock.release()
+    notify = False
+    with _state_lock:
+        if generation != _failure_generation:
+            return False
+        if not ok:
+            _recovery_successes = 0
+            _recovery_last_probe = 0.0
+            if ping_detail != "HTTP 500" and page_detail != "HTTP 500":
+                _failure_mode = "unavailable"
+            return False
+        if not (_recovery_pending or _fail_times):
+            return True
+        now = time.time()
+        if now - _recovery_last_probe < RECOVERY_PROBE_INTERVAL_SEC:
+            return False
+        _recovery_last_probe = now
+        _recovery_successes += 1
+        if _recovery_successes < RECOVERY_SUCCESS_THRESHOLD:
+            return False
+        _recovery_pending = False
+        _recovery_successes = 0
+        _fail_times.clear()
+        _failure_mode = "unavailable"
+        notify = _was_unhealthy
         _was_unhealthy = False
-        log("[OK] Связь с апстримом восстановлена — сайт снова работает!")
-        import threading
-        msg = (
-            "✅ Связь с сервером успешно восстановлена! Сайт ooo-zenitprov.ru снова работает в штатном режиме.\n\n"
-            "🛡️ Все системы функционируют стабильно. Заглушка техработ автоматически отключена."
-        )
+    log("[OK] Бот и сайт устойчиво доступны — заглушка снята")
+    if notify:
+        msg = "✅ Сайт ooo-zenitprov.ru снова работает в штатном режиме."
         threading.Thread(target=_send_vk_notification, args=(msg,), daemon=True, name="guardian-vk-notify").start()
-    return ok
+    return True
 
 
-def _probe_upstream(timeout):
+def _probe_upstream(timeout, path="/ping"):
     """Возвращает (доступен, детали) — для логов диагностики."""
     if not _up:
         return False, "UPSTREAM_URL не задан"
     try:
         conn = _open_upstream(timeout)
-        conn.request("GET", "/ping", headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
+        conn.request("GET", path, headers={"Host": _up.netloc, "User-Agent": "ZenitGuardian-health"})
         resp = conn.getresponse()
         body = resp.read()
         conn.close()
         if _looks_down(resp.status, body):
             return False, "Bothost 404 (слот бота лежит)"
-        return (resp.status < 500), f"HTTP {resp.status}"
+        return (resp.status == 200), f"HTTP {resp.status}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
@@ -274,10 +323,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/__guardian/"):
             return self._guardian_route(path)
         if _deploying_active():
-            return self._serve_updating()
+            return self._serve_maintenance()
         if _unhealthy_active():
-            # Предохранитель тикает только от 500 (хост-ошибка) → показываем её страницу.
-            return self._serve_host_error()
+            if not upstream_up():
+                return self._serve_host_error() if _failure_mode == "host" else self._serve_maintenance()
         self._proxy()
 
     def _guardian_route(self, path):
@@ -319,7 +368,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         qs = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
         if (qs.get("token") or [""])[0] != GUARDIAN_TOKEN:
             return self._send_json(403, {"error": "неверный токен"})
-        was = _deploying_active()
+        ping_ok, _ = _probe_upstream(HEALTH_TIMEOUT)
+        page_ok = _probe_upstream(HEALTH_TIMEOUT, "/")[0] if ping_ok else False
+        if not page_ok:
+            return self._send_json(503, {"error": "бот или главная страница ещё не готовы"})
         _deploying_until = 0.0
         _static_cache.clear()
         log("бот сообщил о готовности — режим обновления снят, кэш статики ОЧИЩЕН")

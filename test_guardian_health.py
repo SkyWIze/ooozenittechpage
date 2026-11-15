@@ -1,101 +1,126 @@
-import sys
-import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+from urllib.parse import urlsplit
 
-# Импортируем тестируемый файл guardian
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import guardian
 
-class TestGuardianHealth(unittest.TestCase):
-    
+
+class GuardianHealthTests(unittest.TestCase):
     def setUp(self):
-        # Сбрасываем глобальные переменные перед каждым тестом
+        guardian._up = urlsplit("https://bot.example.test")
         guardian._was_unhealthy = False
-        guardian._unhealthy_until = 0.0
         guardian._fail_times = []
-        
-    @patch('guardian._open_upstream')
-    def test_probe_upstream_calls_ping(self, mock_open):
-        print("\n[1/3] Check: _probe_upstream requests /ping")
-        # Настраиваем мок соединения
-        mock_conn = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = b'{"status": "ok"}'
-        mock_conn.getresponse.return_value = mock_resp
-        mock_open.return_value = mock_conn
-        
-        ok, detail = guardian._probe_upstream(timeout=1.0)
-        
-        # Проверяем, что запрос ушел именно на /ping
-        mock_conn.request.assert_called_once_with(
-            "GET", 
-            "/ping", 
-            headers={"Host": guardian._up.netloc if guardian._up else "", "User-Agent": "ZenitGuardian-health"}
+        guardian._recovery_pending = False
+        guardian._recovery_successes = 0
+        guardian._recovery_last_probe = 0.0
+        guardian._failure_mode = "unavailable"
+        guardian._failure_generation = 0
+
+    @patch("guardian._open_upstream")
+    def test_probe_requires_http_200(self, open_upstream):
+        connection = open_upstream.return_value
+        response = connection.getresponse.return_value
+        response.read.return_value = b"ok"
+        response.status = 200
+        self.assertEqual(guardian._probe_upstream(1), (True, "HTTP 200"))
+        connection.request.assert_called_once_with(
+            "GET", "/ping", headers={"Host": "bot.example.test", "User-Agent": "ZenitGuardian-health"}
         )
-        self.assertTrue(ok)
-        print("[OK] _probe_upstream requests the /ping endpoint successfully!")
-        
-    @patch('guardian._send_vk_notification')
-    @patch('guardian._probe_upstream')
-    def test_upstream_up_sends_notification_on_recovery(self, mock_probe, mock_send_vk):
-        print("\n[2/3] Check: Reset unhealthy state and notify VK on recovery")
-        
-        # Имитируем, что система БЫЛА в аварийном состоянии
-        guardian._was_unhealthy = True
-        
-        # Имитируем успешный пинг БД
-        mock_probe.return_value = (True, "HTTP 200")
-        
-        # Вызываем проверку
-        ok = guardian.upstream_up()
-        
-        self.assertTrue(ok)
-        # Проверяем, что флаг сбросился
-        self.assertFalse(guardian._was_unhealthy)
-        # Проверяем, что уведомление о восстановлении было отправлено в ВК
-        mock_send_vk.assert_called_once()
-        args, kwargs = mock_send_vk.call_args
-        self.assertIn("Связь с сервером успешно восстановлена", args[0])
-        print("[OK] Recovered status transitions correctly and VK is notified!")
+        response.status = 404
+        self.assertEqual(guardian._probe_upstream(1, "/"), (False, "HTTP 404"))
 
-    @patch('guardian._send_vk_notification')
-    @patch('guardian._probe_upstream')
-    def test_upstream_up_does_not_send_if_already_healthy(self, mock_probe, mock_send_vk):
-        print("\n[3/3] Check: No recovery notification spam when already healthy")
-        
-        # Система УЖЕ здорова (авария не была зафиксирована)
-        guardian._was_unhealthy = False
-        mock_probe.return_value = (True, "HTTP 200")
-        
-        ok = guardian.upstream_up()
-        
-        self.assertTrue(ok)
-        # Уведомление отправляться не должно
-        mock_send_vk.assert_not_called()
-        print("[OK] No redundant recovery notifications if already healthy!")
-
-    @patch('guardian._send_vk_notification')
-    def test_record_failure_silent_mode(self, mock_send_vk):
-        print("\n[4/4] Check: Silent failure mode (no VK notifications, no recovery state)")
-        
-        # Заполняем порог ошибок для активации техработ
+    @patch("guardian.threading.Thread")
+    def test_unavailable_outage_uses_neutral_page_and_no_notification(self, thread):
+        guardian._failure_mode = "host"
         for _ in range(guardian.FAIL_THRESHOLD):
-            guardian._record_failure(reason="Silent test", send_notification=False)
-            
-        # Убедимся, что режим техработ включен
+            guardian._record_failure("Bothost 502", send_notification=False)
         self.assertTrue(guardian._unhealthy_active())
-        # Убедимся, что уведомления не отправлялись
-        mock_send_vk.assert_not_called()
-        # Убедимся, что состояние аварии не выставилось в True
+        self.assertEqual(guardian._failure_mode, "unavailable")
+        thread.assert_not_called()
+        handler = guardian.Handler.__new__(guardian.Handler)
+        handler.path = "/"
+        handler._serve_maintenance = MagicMock()
+        handler._serve_host_error = MagicMock()
+        with patch("guardian._deploying_active", return_value=False), patch("guardian.upstream_up", return_value=False):
+            handler._dispatch()
+        handler._serve_maintenance.assert_called_once()
+        handler._serve_host_error.assert_not_called()
+
+    @patch("guardian.threading.Thread")
+    @patch("guardian._probe_upstream", return_value=(True, "HTTP 200"))
+    def test_recovery_requires_three_spaced_ping_and_page_checks(self, probe, thread):
+        guardian._recovery_pending = True
+        guardian._was_unhealthy = True
+        clock = [10.0]
+        with patch("guardian.time.time", side_effect=lambda: clock[0]):
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 15.0
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 20.0
+            self.assertTrue(guardian.upstream_up())
+        self.assertEqual(probe.call_count, 6)
+        self.assertFalse(guardian._unhealthy_active())
         self.assertFalse(guardian._was_unhealthy)
-        print("[OK] Silent mode works: maintenance screen is active but VK notification is skipped!")
+        thread.assert_called_once()
+        self.assertIn("снова работает", thread.call_args.kwargs["args"][0])
+
+    @patch("guardian._probe_upstream", return_value=(True, "HTTP 200"))
+    def test_one_failure_does_not_reload_maintenance_page_immediately(self, probe):
+        guardian._record_failure("HTTP 502", send_notification=False)
+        self.assertFalse(guardian._unhealthy_active())
+        clock = [10.0]
+        with patch("guardian.time.time", side_effect=lambda: clock[0]):
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 15.0
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 20.0
+            self.assertTrue(guardian.upstream_up())
+        self.assertEqual(probe.call_count, 6)
+        self.assertFalse(guardian._fail_times)
+
+    @patch("guardian.threading.Thread")
+    @patch("guardian._probe_upstream")
+    def test_failed_page_resets_recovery_and_suppresses_notice(self, probe, thread):
+        guardian._recovery_pending = True
+        guardian._was_unhealthy = True
+        probe.side_effect = [
+            (True, "HTTP 200"), (True, "HTTP 200"),
+            (True, "HTTP 200"), (False, "HTTP 502"),
+            (True, "HTTP 200"), (True, "HTTP 200"),
+        ]
+        clock = [10.0]
+        with patch("guardian.time.time", side_effect=lambda: clock[0]):
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 15.0
+            self.assertFalse(guardian.upstream_up())
+            clock[0] = 20.0
+            self.assertFalse(guardian.upstream_up())
+        self.assertTrue(guardian._unhealthy_active())
+        self.assertEqual(guardian._recovery_successes, 1)
+        thread.assert_not_called()
+
+    @patch("guardian._probe_upstream")
+    def test_parallel_recovery_check_waits_for_first_probe(self, probe):
+        guardian._recovery_pending = True
+        guardian._recovery_probe_lock.acquire()
+        try:
+            self.assertFalse(guardian.upstream_up())
+        finally:
+            guardian._recovery_probe_lock.release()
+        probe.assert_not_called()
+        self.assertEqual(guardian._recovery_successes, 0)
+
+    @patch("guardian._probe_upstream")
+    def test_ready_does_not_clear_deployment_when_page_fails(self, probe):
+        probe.side_effect = [(True, "HTTP 200"), (False, "HTTP 502")]
+        handler = guardian.Handler.__new__(guardian.Handler)
+        handler.path = "/__guardian/ready?token=secret"
+        handler._send_json = MagicMock()
+        with patch.object(guardian, "GUARDIAN_TOKEN", "secret"), patch.object(guardian, "_deploying_until", 500):
+            handler._ready_control()
+            self.assertEqual(guardian._deploying_until, 500)
+        handler._send_json.assert_called_once_with(503, {"error": "бот или главная страница ещё не готовы"})
+
 
 if __name__ == "__main__":
-    print("=== GUARDIAN MONITORING TESTS ===")
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestGuardianHealth)
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    if not result.wasSuccessful():
-        sys.exit(1)
+    unittest.main()
